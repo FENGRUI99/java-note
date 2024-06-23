@@ -3287,9 +3287,85 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 1.1线程池有哪些应用场景
 
+<img src="imgs/应用场景.png" alt="应用场景" style="zoom: 33%;" />
+
+- 线程池优点
+  - 线程池是一种池化思想管理线程的工具，使用线程池可以减少创建和销毁线程的开销，避免创建线程过多导致资源耗尽，提高系统性能和响应能力
+- 业务场景
+  - 快速响应用户请求
+    - 电商平台查询商品详情接口：需要获取商品基本信息，库存信息，优惠券等信息，如果串行查询效率低下，使用线程池并行查询信息，可以缩短用户响应时间
+  - 批处理任务
+    - 批量发送短信：假设有10个线程同时发送，理想情况下效率提升10倍
+- 个人项目场景
+  - 消息中心项目中，上游系统将需要发送的消息投递给MQ，消费者从MQ拉取消息后，采用线程池批量发送消息来增强消费者消费能力
+
 #### 1.2如何设置线程池参数
 
+<img src="imgs/线程池参数.png" alt="线程池参数" style="zoom: 33%;" />
+
+- 线程池比较重要的参数有核心线程数，最大线程数，阻塞队列，拒绝策略
+- 核心线程数
+  - 对于CPU密集型任务，大部分时间都在进行CPU计算，**线程数选择CPU核数 + 1**；+1是为了防止线程偶发的缺页中断
+  - 对于IO密集型任务，因为IO密集型任务大部分时间在等在外部设备的IO操作，**线程数选择CPU核数 * 2个**
+  - **特殊情况：**如果项目中线程池不多，核心线程数 = CPU核数 / (1 - 阻塞系数)，阻塞系数一般是0.8～0.9。这样可以充分发挥CPU性能
+- 最大线程数：采用核心线程数 * 2
+- 阻塞队列：
+  - 有界队列：`ArrayBlockingQueue`
+  - 无界队列：`LinkedBlockingQueue`，默认Integer.MAX_VALUE，可以设置队列大小，最常用
+  - 同步队列：`SynchronousQueue`，队列不存储任务，直接将任务交给工作线程，核心线程数满了就直接创建新线程，直到最大线程数
+- 拒绝策略
+  - 丢弃任务，抛出异常
+  - 丢弃任务，不抛出异常
+  - 丢弃最先进入队列的任务
+  - `CallerRunsPolicy`，提交任务的线程执行，即主线程执行任务
+
 #### 1.3线程池工作原理
+
+<img src="imgs/工作原理.png" alt="工作原理" style="zoom: 150%;" />
+
+- 线程池一般指的是`ThreadPoolExecutor`，基于生产者消费者模型实现的，从功能划分成三个部分
+  - 线程池本体：管理工作线程，任务调度
+  - 阻塞队列：扮演生产者消费者中间的缓冲区，工作线程从阻塞队列不断拉取并执行任务
+  - 工作线程：Thread对象内部都有一个Worker，Worker不断从阻塞队列中拉取并执行任务
+- 线程池工作流
+  - 如果当前线程数小于核心线程数，则创建一个新的工作线程执行任务
+  - 如果当前线程数大于等于核心线程数，且阻塞队列未满，将任务添加到阻塞队列
+  - 如果阻塞队列已满，且线程数小于最大线程数，则创建一个新的工作线程执行任务
+  - 如果线程数大于最大线程数，则执行拒绝策略 
+
+<img src="imgs/线程池工作流.png" alt="线程池工作流" style="zoom: 50%;" />
+
+- 工作线程执行流程：当启动一个工作线程，它会在while循环中重复执行一套逻辑
+  - `getTask`从阻塞队列获取任务~~(启动工作线程会自带一个任务)~~，拿不到任务就阻塞一段时间，直到超时或者拿到任务进入下个阶段
+  - 通过`Woker`的`lock`加锁，确保一个线程只执行一个任务
+  - 执行任务
+  - 解锁
+
+<img src="imgs/工作线程执行流程.png" alt="工作线程执行流程" style="zoom:50%;" />
+
+<details>
+  <summary><font color='red'><strong>详细原理介绍</strong></color></summary>
+  <pre><font color='black'><strong>1.工作线程 Worker</strong>
+  <code>ThreadPoolexecutor</code>中，每个工作线程都对应一个内部类<code>Worker</code>，都被存放在一个<code>HashSet</code>中
+  <code>Worker</code>实现了<code>Runnable</code>接口，创建一个<code>Worker</code>实例时，在构造函数中线程工厂创建的<code>Thread</code>对象，将<code>Worker</code>与<code>Thread</code>绑定
+  <code>Worker</code>继承了<code>AQS</code>来保证工作线程是线程安全的
+  </font></pre>
+  <pre><font color='black'><strong>2.主锁 mainLock</strong>
+  <code>ThreadPoolExecutor</code>中使用一个<code>HashSet</code>存<code>Worker</code>实例，但是<code>HashSet</code>本身非线程安全，如何保证线程安全？
+  实际上，除了 workers 以外，线程池中还有大量非线程安全的变量，这里再举几个例子：
+	● ctl：记录线程池状态与工作线程数。
+	● largestPoolSize/corePoolSize：最大/核心工作线程数。
+	● completedTaskCount：已完成任务数。
+	● keepAliveTime：核心线程超时时间。
+  线程池用一个<code>ReentrantLock</code>实现的主锁<code>mainLock</code>，每次操作全局变量时，都需要获取主锁
+  总的来说，线程池通过 mainLock 来保证全局配置的线程安全，而每个工作线程再通过 AQS 来保证工作线程自己的线程安全。
+  </font></pre>
+  <pre><font color='black'><Strong>3.任务执行</Strong>
+  线程池通过<code>addWorker</code>方法启动一个新线程，创建一个<code>Worker</code>对象,构造函数将<code>Worker</code>与线程绑定，调用线程池的<code>runWorker</code>方法，通过while循环去获取任务
+  </font></pre>
+</details>
+
+
 
 #### 1.4项目宕机时线程池任务没处理完
 
@@ -3313,7 +3389,9 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 ### 2.阻塞队列高频考点
 
-#### 2.1说下阻塞队列实现原理
+#### 2.1什么是阻塞队列
+
+#### 2.2说下阻塞队列实现原理
 
 
 
@@ -3335,7 +3413,7 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 4.3CAS的ABA问题
 
-#### 4.x并发场景下如何选择CAS和锁
+#### 4.4并发场景下如何选择CAS和锁
 
 
 
@@ -3351,17 +3429,17 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 ### 6.其他高频考点
 
-#### 三个线程轮流打印ABC三次
+#### 6.1三个线程轮流打印ABC三次
 
-#### volatile关键字有什么用
+#### 6.2volatile关键字有什么用
 
-#### 什么是AQS
+#### 6.3什么是AQS
 
-#### 高并发下如何选择内存计数器
+#### 6.4高并发下如何选择内存计数器
 
-#### ConcurrentHashMap1.8实现原理
+#### 6.5ConcurrentHashMap1.8实现原理
 
-#### Thread的sleep和关键字wait区别
+#### 6.6Thread的sleep和关键字wait区别
 
 
 
@@ -3420,6 +3498,4 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 ### MyBatis
 
 ### SpringBoot
-
-
 
