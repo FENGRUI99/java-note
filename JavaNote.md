@@ -3321,13 +3321,13 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 1.3线程池工作原理
 
-<img src="imgs/工作原理.png" alt="工作原理" style="zoom: 150%;" />
+<img src="imgs/工作原理.png" alt="工作原理" style="zoom: 50%;" />
 
 - 线程池一般指的是`ThreadPoolExecutor`，基于生产者消费者模型实现的，从功能划分成三个部分
   - 线程池本体：管理工作线程，任务调度
   - 阻塞队列：扮演生产者消费者中间的缓冲区，工作线程从阻塞队列不断拉取并执行任务
   - 工作线程：Thread对象内部都有一个Worker，Worker不断从阻塞队列中拉取并执行任务
-- 线程池工作流
+- 任务提交工作流
   - 如果当前线程数小于核心线程数，则创建一个新的工作线程执行任务
   - 如果当前线程数大于等于核心线程数，且阻塞队列未满，将任务添加到阻塞队列
   - 如果阻塞队列已满，且线程数小于最大线程数，则创建一个新的工作线程执行任务
@@ -3335,18 +3335,21 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 <img src="imgs/线程池工作流.png" alt="线程池工作流" style="zoom: 50%;" />
 
-- 工作线程执行流程：当启动一个工作线程，它会在while循环中重复执行一套逻辑
-  - `getTask`从阻塞队列获取任务~~(启动工作线程会自带一个任务)~~，拿不到任务就阻塞一段时间，直到超时或者拿到任务进入下个阶段
+- 任务执行工作流：当启动一个工作线程，它会在while循环中重复执行一套逻辑
+  - `getTask`从阻塞队列获取任务~~(启动工作线程会自带一个任务)~~，拿不到任务就阻塞一段时间，直到拿到任务进入下个阶段或者超时进入线程退出流程
   - 通过`Woker`的`lock`加锁，确保一个线程只执行一个任务
   - 执行任务
   - 解锁
+  - 线程因为异常中断，则进入线程退出流程，否则进入循环
+  - <font color='red'>只有当worker获取任务超时或者执行任务出现异常，才会进入线程退出流程去销毁线程</font>
 
 <img src="imgs/工作线程执行流程.png" alt="工作线程执行流程" style="zoom:50%;" />
 
 <details>
   <summary><font color='red'><strong>详细原理介绍</strong></color></summary>
   <pre><font color='black'><strong>1.工作线程 Worker</strong>
-  <code>ThreadPoolexecutor</code>中，每个工作线程都对应一个内部类<code>Worker</code>，都被存放在一个<code>HashSet</code>中
+  <font color='red'>每个工作线程都对应一个内部类<code>Worker</code>，一个工作线程就是一个<code>Worker</code>(工作者)</font>
+  <code>ThreadPoolexecutor</code>中，通过一个全局变量<code>HashSet</code>存储和管理<code>worker</code>
   <code>Worker</code>实现了<code>Runnable</code>接口，创建一个<code>Worker</code>实例时，在构造函数中线程工厂创建的<code>Thread</code>对象，将<code>Worker</code>与<code>Thread</code>绑定
   <code>Worker</code>继承了<code>AQS</code>来保证工作线程是线程安全的
   </font></pre>
@@ -3362,14 +3365,42 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
   </font></pre>
   <pre><font color='black'><Strong>3.任务执行</Strong>
   线程池通过<code>addWorker</code>方法启动一个新线程，创建一个<code>Worker</code>对象,构造函数将<code>Worker</code>与线程绑定，调用线程池的<code>runWorker</code>方法，通过while循环去获取任务
+	● 通过<code>getTask</code>方法从工作队列中获取任务，如果拿不到就阻塞一段时间，直到获取到任务进入下一个阶段或者<strong>超时</strong>进入线程退出流程
+	● 调用<code>Worker</code>的<code>lock</code>方法加锁，确保一个线程只被一个任务占用
+	● 调用<code>beforeExecute</code>回调方法，然后执行任务
+	● 调用<code>afterExecute</code>回调方法，这两个方法都是空的，需要自定义
+	● 如果线程因为<strong>异常中断</strong>，则进入线程退出流程，否则回到步骤1
+	● <font color='red'>只有当worker获取任务超时或者执行任务出现异常，才会进入线程退出流程去销毁线程</font>
+	● 同样的，<font color='red'><code>getTask</code>获取任务超时，说明当前线程数大于核心线程数，或者设置了核心线程超时销毁</font>
   </font></pre>
 </details>
 
 
-
 #### 1.4项目宕机时线程池任务没处理完
 
+<img src="imgs/线程池关闭任务不丢失.png" alt="线程池关闭任务不丢失" style="zoom:33%;" />
+
+- 优雅停机方案
+  - 如果线程池中任务数量不多，可以实现`Spring`的`DisposableBean`接口，改写`destroy`方法，在容器关闭时调用线程池的`shutdown`方法和`awaitTermination`方法
+  - `shudown`保证线程池有序关闭，继续执行已提交的任务，但不保证所有任务完成
+  - `awaitTermination`设置了一个等待时间，让所有提交的任务完成
+  - 如果任务数过多，还是会丢失任务
+- 消息队列方案
+  - 如果线程池中任务很多，可以借助消息队列保证数据不丢失
+  - 先将任务投递到消息队列，消费者端从Broker拉取任务进行消费，即使项目重启，任务会在MQ中持久化，配合优雅停机方案，最大程度避免任务丢失
+  - 可以使用synchrnousQueue，阻塞队列不存储任务则不会丢失
+
 #### 1.5线程池execute和submit
+
+<img src="imgs/execute和submit.png" alt="execute和submit" style="zoom: 50%;" />
+
+- `execute`和`submit`都是用来线程池中任务提交的，但有几个不同点
+
+- |              | execute                        | submit                                                       |
+  | ------------ | ------------------------------ | ------------------------------------------------------------ |
+  | **返回值**   | 不需要返回值的任务，没有返回值 | 用于需要返回值的任务，返回值封装在`Future`对象中，`Future.get`获取 |
+  | **异常处理** | 直接抛出异常，传播到调用线程   | 不抛出异常，将异常封装到`Future`对象中返回                   |
+
 
 #### 1.6线程池如何实现线程复用&超时回收
 
@@ -3393,15 +3424,21 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 2.2说下阻塞队列实现原理
 
+#### 2.3ArrayBlockingQueue 和 LinkedBlockingQueue 有什么区别？
+
 
 
 ### 3.ReentrantLock 高频考点
 
-#### 3.1ReentrantLock和synchronized有什么区别
+#### 3.1ReentrantLock 底层怎么实现的？
 
 #### 3.2ReentrantLock如何实现可重入
 
-#### 3.3读写锁原理
+#### 3.3公平锁和非公平锁哪个好？
+
+#### 3.4ReentrantLock和synchronized有什么区别
+
+#### 3.5读写锁原理
 
 
 
@@ -3413,7 +3450,9 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 4.3CAS的ABA问题
 
-#### 4.4并发场景下如何选择CAS和锁
+#### 4.4如何解决 CAS 空转或者说高并发情况下如何实现内存计数器？
+
+#### 4.5并发场景下如何选择CAS和锁
 
 
 
