@@ -3465,20 +3465,29 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 - 如果面试官没有问上面什么是阻塞队列问题，可以把队列、阻塞队列的概念讲讲
 - `LinkedBlockingQueue`通过
-  - 两个`ReentrantLock`：`putLock`和`takeLock`控制入队操作和出队操作的线程安全
+  - 两个`ReentrantLock`：`putLock`和`takeLock`保证不会有两个线程同时进行入队或者出队操作
   - 两个`Condition条件变量`：`notfull`和`notEmpty`，通过`await`和`signal`实现入队和出队的阻塞
   - 一个`AtomicInteger`的`count`，原子类保证队列内元素数量的原子性
 - 具体流程，以`put`入队方法为例
   - 先获取putLock
-  - 然后判断队列容量是否已满，如果满了则`await`阻塞，并释放锁，**直到其他线程调用`signal`唤醒当前线程**
-  - 插入元素，
-  - count + 1
-  - 判断队列容量是否已满，不满的话，调用`signal`唤醒其他线程
+  - 然后判断队列容量是否已满，如果满了则`notfull.await`阻塞，并释放锁，**直到其他线程调用`signal`唤醒当前线程**
+  - 插入元素，`count` + 1
+  - 判断队列容量是否已满，不满的话，调用`notfull.signal`唤醒其他线程
   - 解锁
 
 #### 2.3ArrayBlockingQueue 和 LinkedBlockingQueue 有什么区别？
 
+<img src="imgs/ABQ&LBQ.png" alt="ABQ&LBQ" style="zoom: 50%;" />
 
+- `ArrayBlockingQueue`：
+  - 创建必须指定容量大小
+  - 基于数组，创建时预分配一块连续内存，内存利用率高，且没有链表结构的额外开销
+  - 但由于入队和出队共享同一把锁，在高并发情况下，锁竞争激烈从而影响性能
+- `LinkedBlockingQueue`
+  - 创建默认为无界，实际是`Intger.MAX_VALUE`
+  - 基于链表结构，内存占用逐渐增大，内存不连续，相对利用率低
+  - 由于入队和出队用的是两把锁，在高并发情况下，锁竞争相对不激烈，从而效率较高
+- 并发量高的情况下，选择`LinkedBlockingQueue`；对内存敏感的应用或对容量有明确限制的场景，选择`ArrayBlockingQueue`
 
 ### 3.ReentrantLock 高频考点
 
