@@ -3404,17 +3404,44 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 1.6线程池如何实现线程复用&超时回收
 
-#### 1.7线程池如何实现快速消费
+![复用和超时回收](imgs/复用和超时回收.png)
 
-#### 1.8如何监控线程池的运行性能指标
+##### 1.6.1线程复用
 
-#### 1.9如何感知线程池触发拒绝策略
+- 当线程池通过`addWorker`方法创建工作线程后，通过`runWorker`执行任务，执行完之后不会销毁，而是通过`while`循环反复调用`getTask`方法从阻塞队列中获取任务
 
-#### 1.10线程池如何实现不丢弃任务
+##### 1.6.2超时回收
 
-#### 1.11为什么不建议使用Executor创建线程
+- `getTask`有两种机制：
+  - 无限期等待阻塞队列中有了任务再返回
+  - **设置一个等待时间，如果超过等待时间，`getTask`返回空，执行线程销毁流程**
+- 两种情况可以设置等待时间
+  - 允许核心线程超时
+  - 当前线程数大于核心线程数
 
-#### 1.12如何处理线程池任务运行异常
+#### 1.7线程池如何实现不丢弃任务
+
+- 拒绝策略CallerRunsPolicy
+- 动态线程池监控，调整参数
+
+#### 1.8为什么不建议使用Executors创建线程池
+
+![不使用Executors](imgs/不使用Executors.png)
+
+- 有任务积压，资源耗尽风险：比如`singleThreadPool`和`FixedThreadPool`使用的阻塞队列是`linkedBlockingQueue`，默认是无界的，容易大量任务堆积，导致OOM
+- 线程数不可控风险：比如`cachedThreadPool`使用的阻塞队列是`SynchronousQueue`，容易创建过多线程，也会导致OOM
+- 不够透明：无法清晰地了解其内部工作机制和潜在问题，这对于性能调优和故障排查都是不利的。
+- 建议直接通过ThreadPoolExecutor创建线程池，对于线程数、阻塞队列和拒绝策略可以由开发者自己选择，对线程池控制更加精确
+
+#### 1.9如何处理线程池任务运行异常
+
+#### 1.10如何监控线程池的运行性能指标
+
+#### 1.11如何感知线程池触发拒绝策略
+
+#### 1.12线程池如何实现快速消费
+
+https://blog.csdn.net/laodanqiu/article/details/137358034
 
 
 
@@ -3422,7 +3449,32 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 #### 2.1什么是阻塞队列
 
-#### 2.2说下阻塞队列实现原理
+<img src="imgs/阻塞队列.png" alt="阻塞队列" style="zoom:50%;" />
+
+- 队列是一种先进先出的数据结构
+- 阻塞队列是在队列的基础上，加上两个特殊操作
+  - 阻塞入队：当队列容量满时，插入元素阻塞，直到队列有多余容量
+  - 阻塞出队：当队列容量为空时，移除元素阻塞，直到队列存在元素
+- `BlockingQueue`是JDK的一个接口，常用的阻塞队列实现类有`ArrayBlockingQueue`和`LinkedBlockingQueue`
+  - 从并发的角度讲，`ArrayBlockingQueue`入队和出队共享同一把锁，在高并发的情况下，锁竞争激烈，导致性能下降
+  - 而`LinkedBlockingQueue`入队和出队是两把锁，在高并发下，性能较好
+
+#### 2.2[说下阻塞队列实现原理](https://juejin.cn/post/7221183644576514104)
+
+![LinkedBlockingQueue](imgs/LinkedBlockingQueue.png)
+
+- 如果面试官没有问上面什么是阻塞队列问题，可以把队列、阻塞队列的概念讲讲
+- `LinkedBlockingQueue`通过
+  - 两个`ReentrantLock`：`putLock`和`takeLock`控制入队操作和出队操作的线程安全
+  - 两个`Condition条件变量`：`notfull`和`notEmpty`，通过`await`和`signal`实现入队和出队的阻塞
+  - 一个`AtomicInteger`的`count`，原子类保证队列内元素数量的原子性
+- 具体流程，以`put`入队方法为例
+  - 先获取putLock
+  - 然后判断队列容量是否已满，如果满了则`await`阻塞，并释放锁，**直到其他线程调用`signal`唤醒当前线程**
+  - 插入元素，
+  - count + 1
+  - 判断队列容量是否已满，不满的话，调用`signal`唤醒其他线程
+  - 解锁
 
 #### 2.3ArrayBlockingQueue 和 LinkedBlockingQueue 有什么区别？
 
@@ -3466,19 +3518,29 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 
 
-### 6.其他高频考点
+### 6.并发集合高频考点
 
-#### 6.1三个线程轮流打印ABC三次
+#### 6.1Java 集合常见面试题总结
 
-#### 6.2volatile关键字有什么用
+#### 6.2HashMap
 
-#### 6.3什么是AQS
+#### 6.3ConcurrentHashMap
 
-#### 6.4高并发下如何选择内存计数器
+#### 6.4 为什么 ConcurrentHashMap key 和 value 不允许为 null？
 
-#### 6.5ConcurrentHashMap1.8实现原理
 
-#### 6.6Thread的sleep和关键字wait区别
+
+### 7.其他高频考点
+
+#### 7.1三个线程轮流打印ABC三次
+
+#### 7.2volatile关键字有什么用
+
+#### 7.3 Synchronize关键字
+
+#### 7.4什么是AQS
+
+#### 7.5Thread的sleep和关键字wait区别
 
 
 
