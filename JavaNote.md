@@ -3468,6 +3468,29 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 插入元素，`count` + 1
   - 判断队列容量是否已满，不满的话，调用`notfull.signal`唤醒其他线程
   - 解锁
+  
+  ReentrantLock：阻塞其他线程
+  
+  ​	lock，unlock
+  
+  
+  
+  Condition ：主动阻塞当前线程，需要其他线程来唤醒
+  
+  ​	await：阻塞线程并释放锁
+  
+  ​	 signal：唤醒第一个被await阻塞的线程，但不是立即唤醒，需要参与锁竞争
+
+<details>
+  <summary><font color='red'><strong>ReentrantLock和Condition个人理解</strong></color></summary>
+  <pre><font color='black'><strong>ReentrantLock</strong>：阻塞其他线程
+<strong>Condition条件变量</strong>：主动阻塞当前线程，需要其他线程来唤醒
+  await：阻塞并释放锁
+  signal：唤醒第一个被await阻塞的线程(变体CLH队列中的线程)，但不是立即唤醒，需要与新请求锁的线程进行锁竞争
+  </font></pre>
+</details>
+
+
 
 #### 2.3ArrayBlockingQueue 和 LinkedBlockingQueue 有什么区别？
 
@@ -3497,7 +3520,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
     - 双向链表实现，head和tail都能操作节点，效率更高
     - 队列中的节点都会进行**<font color='red'>自旋</font>**尝试索取锁，区别于传统观念CLH队列，变体CLH在自旋一定次数后，就会阻塞线程，在高并发情况下，CPU利用率更高
   - 如果持有锁的线程释放锁，**state会减1**，直到**state==0**，则完全释放锁并唤醒队列中下一个线程
-  - ReentrantLock支持公平锁和非公平锁，默认为非公平锁。
+  - `ReentrantLock`支持公平锁和非公平锁，默认为非公平锁。
   - 使用**非公平锁**时，队列中唤醒的线程和新请求锁的线程会同时竞争锁，新来的线程可能先获取到锁，在高并发情况下，可能会导致一些线程有饥饿的情况
 
 - ![CLH](imgs/CLH.png)
@@ -3543,21 +3566,77 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 #### 4.1乐观锁和悲观锁
 
+- 乐观锁：在操作数据前假设不存在冲突，在数据提交时验证是否冲突，有冲突则重试
+- 悲观锁：假设操作数据时有冲突，给数据上锁，再操作数据
+
 #### 4.2什么是CAS，哪些使用场景
+
+<img src="imgs/CAS.png" alt="CAS" style="zoom:50%;" />
+
+- **CAS是一种无锁的原子操作，通过比较和交换在并发场景中更新内存值**
+- CAS包含三个值：旧值、预期值、新值
+- 具体流程
+  - 从内存中获取旧值
+  - 检验旧值和预期值是否相等
+  - 如果相等，将旧值替换为新值；如果不等，重复执行CAS操作
+- CAS一般会配合自旋使用，构成自旋锁。优点是线程不阻塞，不需要上下文切换
+- 基于这种自旋锁，CAS在 JUC 中使用很频繁。比如用于在并发场景下，需要对数据进行原子操作，例如`AtomicInteger`就是基于CAS + 自旋实现
+- 在 JUC 中，基于 AQS 的锁，例如 `ReentrantLock`中最关键的 `state` 变量，它代表锁的状态，它是通过 CAS来更新的。在加入变体 CLH 队列时，也会尝试通过 CAS 和自旋的方式来更新 `state`，从而获取锁
+- CAS可能会带来ABA问题：CAS判断某个变量是否可修改是根据变量的旧值和预期值是否相等。如果线程1想把变量从A修改到B，此时线程2将变量从A修改到B，从B修改到A。对线程1而言，旧值还是A符合预期，所以可以修改，这就是ABA问题
 
 #### 4.3CAS的ABA问题
 
+<img src="imgs/ABA问题.png" alt="ABA问题" style="zoom:50%;" />
+
+- CAS判断某个变量是否可修改是根据变量的旧值和预期值是否相等。如果线程1想把变量从A修改到B，此时线程2将变量从A修改到B，从B修改到A。对线程1而言，旧值还是A符合预期，所以可以修改，这就是ABA问题
+- 解决方案：引入**单调递增的版本号机制**，通过双重CAS解决。先CAS更新版本号，再CAS更新变量
+- JUC中的`AtomicStampedReference`就是这么实现的
+
 #### 4.4如何解决 CAS 空转或者说高并发情况下如何实现内存计数器？
+
+<img src="imgs/高并发下内存计数器.png" alt="高并发下内存计数器" style="zoom: 50%;" />
+
+- 一般内存计数器用`AtomicLong`或`AtomicInteger`实现，但在高并发情况下，大量线程竞争资源会导致CAS频繁修改失败，导致大量线程处于空转的状态，大幅占用CPU资源
+- 使用**`LongAdder`**可以解决CAS空转问题。它的核心思想为**<font color='red'>分段</font>**，将热点数据分散从而减少CAS失败的可能。
+- `LongAdder`的结构是一个**`base`变量** + 一个**`cell[]`数组**
+  - 没有竞争时，只会修改`base`的值。
+  - 当CAS失败时，会将值累计在`cell`数组的某一位上，从而实现分散热点数据
+  - 需要获取值时，对`base` + `cell`数组进行累加
+
+![LongAdder](imgs/LongAdder.png)
 
 #### 4.5并发场景下如何选择CAS和锁
 
+- CAS是一种无锁的原子操作，通过自旋让线程在不阻塞的情况下对数据进行修改，从而避免上下文切换的开销。它非常适用于**读多写少**的场景。
 
+- 锁机制可以确保操作的原子性和有序性。在并发写入的情况下，只有一个线程能获取到锁，其他线程会被阻塞等待，因此不会像 CAS 那样导致大量线程自旋。锁机制更适用于**写多读少**的场景。
 
 ### 5.ThreadLocal 高频考点
 
 #### 5.1ThreadLocal底层实现原理
 
+![ThreadLocal](imgs/ThreadLocal.png)
+
+- `ThreadLocal`是什么
+  - `ThreadLocal`是一种特殊的**线程本地存储机制**，用于在多线程环境中为**每个线程提供独立的变量副本**，从而避免线程间共享变量带来的并发问题
+- `ThreadLocal`使用场景有
+  - Web应用中，每个请求线程会用`ThreadLocal`存储`Session`信息(用户ID，用户权限)
+  - 数据库连接池，为每一个请求线程存储独立的数据库连接
+- 底层实现
+  - `ThreadLocal`本身不存储数据，它有一个内部类叫`ThreadLocalMap`。每个线程中都有一个`TheadLocalMap`变量用来统一管理每个线程的`ThreadLocal`数据。
+  - `ThreadLocalMap`类似`HashMap`底层就是一个数组。当一个线程访问 `ThreadLocal` 的时候，实际上是访问线程对象持有的 `ThreadLocalMap`，每个 `ThreadLocal`作为`key`和它对应的数据都会被封装为 `Entry` 对象并存储到 `ThreadLocalMap` 中。
+  - `ThreadLocalMap`和`HashMap`不同的地方在于，它用斐波那契散列作为哈希算法。通过一个全局计数器，每创建一个`ThreadLocal`对象，采用一个特殊值的倍数作为哈希值
+  - 对于哈希冲突，采用线性探测方法解决（一直往数组下一项找）
+- 极端情况下可能会有内存泄露风险。
+
 #### 5.2ThreadLocal什么场景内存泄漏
+
+![内存泄漏](imgs/内存泄漏.png)
+
+- ThreadLocal不存储数据，真实数据存储在每个线程的ThreadLocalMap中，以Entry的形式存储
+- Entry的key就是ThreadLocal对象，是以弱引用的形式存在。弱引用对象在GC时会被回收。当Entry对应的这个`threadLocal变量=null`时，也就是所有强引用都失效，ThreadLocal对象会被回收，但是这个Entry对应的value又是一个强引用，所以不会被回收。导致这个Entry不能被获取，也不能被回收，只有当线程被销毁时，Entry才能回收
+- 但是一般多线程采用线程池方式启动，如果当前线程完成任务，且线程数少于核心线程数，当前线程不会被销毁，那么线程不销毁，线程对应的ThreadLocalMap也不会销毁，导致内存泄漏
+- ThreadLocalMap才增删改查时，会删除一些失效的Entry，但有滞后性
 
 #### 5.3ThreadLocal有哪些扩展实现
 
@@ -3571,7 +3650,11 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 #### 6.3ConcurrentHashMap
 
-#### 6.4 为什么 ConcurrentHashMap key 和 value 不允许为 null？
+#### 6.4 为什么ConcurrentHashMap key和value不允许为 null
+
+#### 6.5为什么ConcurrentHashMap JDK8放弃了分段锁
+
+#### 6.6为什么ConcurrentHashMap读操作不用加锁
 
 
 
