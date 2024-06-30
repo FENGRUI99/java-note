@@ -3640,6 +3640,15 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 #### 5.3ThreadLocal有哪些扩展实现
 
+![父子线程参数的传递](imgs/父子线程参数的传递.png)
+
+- `ThreadLocal`：由于ThreadLocal数据是跟线程绑定的，所以父线程和子线程无法传递值
+- `InheritableThreadLocal`：父线程在创建子线程时，可以将父线程数据拷贝到子线程，从而实现父子线程参数传递。但是如果使用线程池，由于线程不是每次新创建，所以无法使用
+- **TTL** (`TransmittableTreadLocal`)：继承了InheritableThreadLocal，在此基础上提供了一种**快照机制**
+  - 当父线程调用子线程时，会生成一份TTL快照
+  - 在子线程运行之前，将父线程TTL的快照拷贝到子线程TTL
+  - 在子线程执行结束，将TTL恢复到快照之前的状态
+
 
 
 ### 6.并发集合高频考点
