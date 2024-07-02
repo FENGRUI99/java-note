@@ -3633,51 +3633,173 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 ![内存泄漏](imgs/内存泄漏.png)
 
-- ThreadLocal不存储数据，真实数据存储在每个线程的ThreadLocalMap中，以Entry的形式存储
-- Entry的key就是ThreadLocal对象，是以弱引用的形式存在。弱引用对象在GC时会被回收。当Entry对应的这个`threadLocal变量=null`时，也就是所有强引用都失效，ThreadLocal对象会被回收，但是这个Entry对应的value又是一个强引用，所以不会被回收。导致这个Entry不能被获取，也不能被回收，只有当线程被销毁时，Entry才能回收
-- 但是一般多线程采用线程池方式启动，如果当前线程完成任务，且线程数少于核心线程数，当前线程不会被销毁，那么线程不销毁，线程对应的ThreadLocalMap也不会销毁，导致内存泄漏
-- ThreadLocalMap才增删改查时，会删除一些失效的Entry，但有滞后性
+- `ThreadLocal`不存储数据，真实数据存储在每个线程的`ThreadLocalMap`中，以`Entry`的形式存储
+- `Entry`是一个键值对，`key`就是`ThreadLocal`对象，是以弱引用的形式存在。弱引用对象在GC时会被回收。当`Entry`对应的这个**<font color='red'>`threadLocal变量=null`</font>**时，也就是**所有外部强引用都失效**，`ThreadLocal`对象会被回收，但是这个`Entry`对应的`value`又是一个强引用，所以`Entry`不会被回收。导致这个`Entry`不能被获取，也不能被回收，只有当线程被销毁时，`Entry`才能回收
+- 但是一般多线程采用线程池方式启动，如果当前线程完成任务，且线程数少于核心线程数，当前线程不会被销毁，那么线程不销毁，线程对应的`ThreadLocalMap`也不会销毁，导致内存泄漏
+- `ThreadLocalMap`才增删改查时，会删除一些失效的`Entry`，但有滞后性
 
 #### 5.3ThreadLocal有哪些扩展实现
 
 ![父子线程参数的传递](imgs/父子线程参数的传递.png)
 
-- `ThreadLocal`：由于ThreadLocal数据是跟线程绑定的，所以父线程和子线程无法传递值
+- `ThreadLocal`：由于`ThreadLocal`数据是跟线程绑定的，所以父线程和子线程无法传递值
 - `InheritableThreadLocal`：父线程在创建子线程时，可以将父线程数据拷贝到子线程，从而实现父子线程参数传递。但是如果使用线程池，由于线程不是每次新创建，所以无法使用
-- **TTL** (`TransmittableTreadLocal`)：继承了InheritableThreadLocal，在此基础上提供了一种**快照机制**
+- **TTL** (`TransmittableTreadLocal`)：继承了`InheritableThreadLocal`，在此基础上提供了一种**快照机制**
   - 当父线程调用子线程时，会生成一份TTL快照
   - 在子线程运行之前，将父线程TTL的快照拷贝到子线程TTL
   - 在子线程执行结束，将TTL恢复到快照之前的状态
 
+### 7.其他高频考点
+
+#### 7.1volatile关键字有什么用
+
+![Volatile1](imgs/Volatile1.png)
+
+- `volatile`是java关键字，用于修饰变量
+- 主要用于保证变量的**<font color='red'>可见性</font>**，所有线程可以获取到最新的数据。对于变量的修改和读取都是直接操作**内存**，而不是缓存
+- `volatile`还用于**禁止指令重排序**：`volatile`变量前后的操作顺序不变
+- `volatile`不能保证操作的**原子性**：如果`i++`操作，分为三个步骤，获取i的值，`i + 1`操作，更新i的值到内存，如果只使用volatile，并发情况下，导致i的值更新不正确，需要用锁机制或者`Atomic`类解决
+
+#### 7.2Synchronized关键字
+
+![Synchronized](imgs/Synchronized.png)
+
+- `Synchronized`是java一个锁，用于并发情况解决资源竞争问题
+- `Synchronized`可以修饰实例方法、静态方法和代码块
+- `Synchronized`和`ReentrantLock`一样都是可重入锁
+- 但是相较于`ReentrantLock`
+  - 不支持公平锁
+  - 只支持`wait`和`notify`的单条件通知
+  - 不支持`trylock`这种尝试获取锁
+  - 不支持锁的中断
+  - 不支持锁的状态查询
+
+#### 7.3三个线程轮流打印ABC
+
+- 一个state决定使用哪个线程，ReentrantLock锁线程，
+- 不满足state条件，while循环中wait1.await，直到1号线程wait1.signal
+
+```java
+    volatile int state = 0;
+ 
+    public void threeThreadPrintTest(){
+        ReentrantLock lock = new ReentrantLock();
+        Condition wait1 = lock.newCondition();
+        Condition wait2 = lock.newCondition();
+
+        Thread t1 = new Thread(()->{
+            lock.lock();
+            try {
+                System.out.println(state);
+                state = 1;
+                wait1.signal();
+            } catch (Throwable t){
+                throw new RuntimeException(t);
+            } finally {
+                lock.unlock();
+            }
+        });
+        Thread t2 = new Thread(()->{
+            lock.lock();
+            try {
+                while (state != 1){
+                    wait1.await();
+                }
+                System.out.println(state);
+                state = 2;
+                wait2.signal();
+            } catch (Throwable t){
+                throw new RuntimeException(t);
+            } finally {
+                lock.unlock();
+            }
+        });
+        Thread t3 = new Thread(()->{
+            lock.lock();
+            try {
+                while (state != 2){
+                    wait2.await();
+                }
+                System.out.println(state);
+            } catch (Throwable t){
+                throw new RuntimeException(t);
+            } finally {
+                lock.unlock();
+            }
+        });
+        t3.start();
+        t2.start();
+        t1.start();
+    }
+```
 
 
-### 6.并发集合高频考点
 
-#### 6.1Java 集合常见面试题总结
+## Collections集合高频考点
+
+#### 6.1Map和Set
+
+| 数据类型    | 特点                                                         |
+| ----------- | ------------------------------------------------------------ |
+| `HashMap`   | 线程不安全                                                   |
+| `HashTable` | 线程安全的`HashMap`(**不建议使用**)，多线程使用`ConcurrentHashMap` |
+| `TreeMap`   | 基于红黑树实现，具有根据`key`**排序**功能和**搜索**功能      |
+
+| 数据类型        | 特点                                                        |
+| --------------- | ----------------------------------------------------------- |
+| `HashSet`       | 基于`HashMap`                                               |
+| `LinkedHashSet` | 基于链表和`HashMap`，保留了插入的顺序，插入元素满足FIFO顺序 |
+| `TreeSet`       | 基于红黑树，具有根据元素**排序**功能和**搜索**功能          |
 
 #### 6.2HashMap
 
+![HashMap1](imgs/HashMap1.png)
+
+- 哈希函数：哈希函数用于获取键值对在`Map`中的位置，通过`key`的哈希值 `mod` 数组长度决定
+- 底层结构
+  - JDK1.7 **数组 + 链表**：
+    - HashMap由一个数组和多个链表组成，数组的每个元素都指向了一个链表，链表是为了解决哈希冲突，将哈希取模结果相同的键值对放入同一个链表中
+    - 键值对通过哈希函数获得到在数组中的位置，将键值对放入链表中
+  - JDK 1.8 **数组 + 链表/红黑树**
+    - 应对哈希冲突采取不同策略：当链表长度大于8，尝试扩容链表，当链表长度大于64，转换为红黑树
+
 #### 6.3ConcurrentHashMap
+
+![ConcurrentHashMap1](imgs/ConcurrentHashMap1.png)
+
+- JDK 1.7 **`Segment`分段锁数组 + `HashEntry`数组 + 链表**
+  - 我理解1.7版本的concurrentHashMap就是分段锁 + 简单HashMap的结构
+  - 一个长度为16的Segment数组，数组每一位都是`ReentrantLock`实现的分段锁，分段锁还可以将数据分段，每段拥有独立的锁，减少线程竞争，从而提高并发能力
+  - Segment数组的每一位就是一个`HashEntry`数组 + 链表，其实就是一个简单`hashMap`
+- JDK 1.8 **`Node`数组 + 链表/红黑树**
+  - 不再采用分段锁，而是使用`CAS` + `Synchronized`保证线程安全
+  - 跟`hashmap`一样，当链表长度超过阈值，链表转换成红黑树
+  - CAS：在**<font color='red'>插入元素</font>**到数组时，会使用CAS操作插入，如果数组对应位置为空，就是没有链表，则插入成功
+  - 如果不为空，则需要用到`Synchronized`，锁定一个链表或者一个红黑树的根节点，再进行插入
+
+<div style="display: flex; justify-content: space-between;">
+    <img src="imgs/java7_concurrenthashmap.png" alt="Image 1" style="width: 48%;"/>
+    <img src="imgs/java8_concurrenthashmap.png" alt="Image 2" style="width: 48%;"/>
+</div>
 
 #### 6.4 为什么ConcurrentHashMap key和value不允许为 null
 
+![为什么不允许null](imgs/为什么不允许null.png)
+
+- 不允许为`null`，主要是为了避免歧义，`null`是一个特殊值，可以是不存在，也可以是值为`null`，不易区分
+- 单线程下使用`HashMap`时，`key`允许有一个`null`，因为**单线程不会有其他线程修改`HashMap`**，所以`containsKey`能够通过`key==null`找到该项键值对
+- 多线程下使用`ConcurrentHashMap`时，如果`key`允许是`null`，**因为多线程存在其他线程修改`map`**，不能够确定`key`是存在等于`null`还是`key`不存在
+
 #### 6.5为什么ConcurrentHashMap JDK8放弃了分段锁
+
+![JDK 1.8放弃分段锁](imgs/JDK 1.8放弃分段锁.png)
+
+- JDK1.8锁的实现降低了颗粒度：JDK1.7采用分段锁，锁的是一整个`HashEntry`数组；而JDK1.8采用`Synchronized`，锁的是`Node`数组的具体一位，并发性更好
+- 采用`Synchronized`替代`ReentrantLock`是因为`Synchronized`是基于`JVM`的，相较于基于`API`的`ReentrantLock`，不用创建锁对象，内存消耗更小
 
 #### 6.6为什么ConcurrentHashMap读操作不用加锁
 
-
-
-### 7.其他高频考点
-
-#### 7.1三个线程轮流打印ABC三次
-
-#### 7.2volatile关键字有什么用
-
-#### 7.3 Synchronize关键字
-
-#### 7.4什么是AQS
-
-#### 7.5Thread的sleep和关键字wait区别
+- 不论是链表节点还是红黑树节点都加了**`volatile`**关键字，保证变量的可见性，也就是所有的读写操作都对所有线程立即可见，每次都读取的是最新值
 
 
 
