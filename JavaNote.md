@@ -2983,7 +2983,9 @@ mvcc还不了解的同学，可以先把概念搞清楚，read view中四变量�
     - 不使用MQ，需要在购票系统业务逻辑中远程调用，一旦其他系统修改，购票系统业务逻辑代码也要修改，比如要删除邮件服务
     - 使用MQ。购票系统发送消息给MQ，不关心下游业务操作，下游业务只需订阅特定topic，拉去信息进行消费
 - **削峰/限流**
-  - 短时间高并发产生的消息存储在消息队列中，然后后端服务再慢慢根据自己的能力去消费这些消息，这样就避免直接把后端服务打垮掉
+  - 短时间高并发产生的消息存储在消息队列中，然后下游服务再慢慢根据自己的能力去消费这些消息，这样就避免直接让下游服务器宕机    
+    - **为什么下游服务器会宕机**：Spring的Tomcat底层用线程池来接受请求，默认核心线程数10，最大线程数200，无界队列
+    - 当处理任务时，先消耗核心线程数线程，**再消耗最大线程数线程，再加入无界队列**，直到OOM
 - 分布式事务
 - 顺序保证
 - 延时/定时处理
@@ -3056,7 +3058,19 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
   - Kafka 侧重于通过流处理引擎实现实时数据流处理，在大数据流处理和实时数据分析方面使用较多。
   - RocketMQ 的设计更注重实现高可用和多功能的消息服务，在国内较多公司应用较为广泛。
 
-综合比对，Kafka 的优势在于性能高，而 RocketMQ 的功能和业务场景更贴合国内公司，所以使用也较多。
+Kafka 的优势在于性能高，而 RocketMQ 的功能和业务场景更贴合国内公司，所以使用也较多。
+
+从学习成本上来讲，RocketMQ早期架构是基于Kafka衍生出来的，学习了rocketMQ，后续如果需要学习Kafka，也能快速上手
+
+
+
+### RocketMQ为什么这么快
+
+- 可以横向扩展的`Broker`架构
+- Netty网络模型，利用非阻塞IO来提高IO的吞吐量
+- 支持异步刷盘
+- 零拷贝
+- 顺序写入`CommitLog`
 
 ### 5.[RocketMQ消息推模式/拉模式](http://wuwenliang.net/2022/05/11/%E6%8E%A8%E4%B8%8E%E6%8B%89%EF%BC%8CRocketMQ%E6%B6%88%E6%81%AF%E6%B6%88%E8%B4%B9%E7%9A%84%E9%82%A3%E4%BA%9B%E5%A7%BF%E5%8A%BF/)
 
@@ -3077,10 +3091,10 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
   
   - **长轮询**：
       - 本质还是轮询，**定时发送请求**
-    - **长轮询特点**：在Broker在没有新消息的时候才阻塞，有消息会立刻返回，或者超时返回
+    - **长轮询特点**：在Broker端没有新消息的时候才阻塞，有消息会立刻返回，或者超时返回
   
 - **为什么不用真正的推模式**
-    - 首先是加大 Server 端的工作量，需要动态感知Consumer端的存在，进而影响 Server 的性能
+    - 首先是加大 Broker的工作量，需要动态感知Consumer端的存在，进而影响 Server 的性能
     - 其次Client 的处理能力各不相同， Client 的状态不受 Server 控制
     
   - `DefaultMQPushConsumer`
@@ -3092,17 +3106,13 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 - 消息丢失场景和解决
   - ![消息丢失解决](imgs/消息丢失解决.png)
-  - **生产者产生消息发送给MQ**，发生网络波动，消息可能丢失
-    - 解决方案： 
-      - 通过配置生产者的重试次数
-      - 或者使用MQ分布式事务
-  - **MQ持久化消息阶段**，有两种情况发生消息丢失
-    - MQ异步刷盘，消息只写入到操作系统的`page cache`还没有刷盘成功，此时broker宕机，数据丢失
-      - 解决方案：**同步刷盘策略**，MQ会等待刷盘成功返回`ACK`
-    - 消息写入磁盘，但是数据没有备份，磁盘损坏
-      - 采用**集群**方式部署 + **主从**模式 + **同步复制**模式
+  - **生产者产生消息发送给MQ**，同步发送 + ACK + 消息重试
+    - 发送有同步发送和异步发送机制，选择<font color='red'>**同步发送**</font>机制，配合ACK机制和消息重试机制保证消息不丢失
+  - **MQ持久化消息阶段**，**刷盘策略和多副本（主从机制）**
+    - 采用**同步刷盘**的方式，将消息写入磁盘，再返回ACK，不是像异步刷盘那样，写入`page cache`就返回ACK
+    - 采用**集群方式 + 主从模式**部署，避免磁盘损坏导致消息丢失，同时设置**主从同步复制**，保证消息不会一致性
   - **消费者消费消息阶段**
-    - 一般的同步消费由于MQ的重试机制存在，不会造成消息丢失
+    - 一般的同步消费由于MQ的重试机制存在，不会造成消息丢失 （重试机制：延迟队列->重试队列->死信队列）
     - 异步消费，由于业务代码处理不合理会导致消息丢失，
     - 业务代码还没执行完，就返回`ACK`给`Broker`，一旦消费失败，消息就丢失了
 
@@ -3180,7 +3190,7 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 ### 13.什么是零拷贝
 
-- 零拷贝：减少数据在内存中拷贝次数，以此提高IO效率
+- 零拷贝：减少CPU拷贝次数和上下文切换次数，以此提高IO效率
 
 - 传统IO读写：四次用户态与内核态切换，四次数据拷贝
 
@@ -3306,7 +3316,7 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 - 阻塞队列：
   - 有界队列：`ArrayBlockingQueue`
   - 无界队列：`LinkedBlockingQueue`，默认Integer.MAX_VALUE，可以设置队列大小，最常用
-  - 同步队列：`SynchronousQueue`，队列不存储任务，直接将任务交给工作线程，核心线程数满了就直接创建新线程，直到最大线程数
+  - 同步队列：`SynchronousQueue`，队列不存储任务，直接将任务交给工作线程，核心线程数满了就直接创建新线程，直到最大线程数，**<font color='red'>快速响应</font>**
 - 拒绝策略
   - 丢弃任务，抛出异常
   - 丢弃任务，不抛出异常
@@ -3319,7 +3329,7 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 
 - 线程池一般指的是`ThreadPoolExecutor`，基于生产者消费者模型实现的，从功能划分成三个部分
   - 线程池本体：管理工作线程，任务调度
-  - 阻塞队列：扮演生产者消费者中间的缓冲区，工作线程从阻塞队列不断拉取并执行任务
+  - 阻塞队列：扮演生产者消费者中间的缓冲区，工作线程从**<font color='red'>阻塞队列</font>**不断拉取并执行任务
   - 工作线程：Thread对象内部都有一个Worker，Worker不断从阻塞队列中拉取并执行任务
 - 任务提交工作流
   - 如果当前线程数小于核心线程数，则创建一个新的工作线程执行任务
@@ -3330,7 +3340,7 @@ RabbitMQ 从性能上不及 RocketMQ、Kafka、功能上不及 RocketMQ，国内
 <img src="imgs/线程池工作流.png" alt="线程池工作流" style="zoom: 50%;" />
 
 - 任务执行工作流：当启动一个工作线程，它会在while循环中重复执行一套逻辑
-  - `getTask`从阻塞队列获取任务~~(启动工作线程会自带一个任务)~~，拿不到任务就阻塞一段时间，直到拿到任务进入下个阶段或者超时进入线程退出流程
+  - `getTask`从阻塞队列获取任务~~(启动工作线程会自带一个任务)~~，拿不到任务就阻塞一个`KeepAliveTime`的时间，直到拿到任务进入下个阶段或者超时进入线程退出流程
   - 通过`Woker`的`lock`加锁，确保一个线程只执行一个任务
   - 执行任务
   - 解锁
@@ -3460,7 +3470,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 - 如果面试官没有问上面什么是阻塞队列问题，可以把队列、阻塞队列的概念讲讲
 - `LinkedBlockingQueue`通过
   - 两个`ReentrantLock`：`putLock`和`takeLock`保证不会有两个线程同时进行入队或者出队操作
-  - 两个`Condition条件变量`：`notfull`和`notEmpty`，通过`await`和`signal`实现入队和出队的阻塞
+  - 两个`Condition条件变量`：`notfull`和`notEmpty`，通过`await`和`signal`实现当队列 为空/满时阻塞，不满时唤醒
   - 一个`AtomicInteger`的`count`，原子类保证队列内元素数量的原子性
 - 具体流程，以`put`入队方法为例
   - 先获取putLock
@@ -3469,17 +3479,6 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 判断队列容量是否已满，不满的话，调用`notfull.signal`唤醒其他线程
   - 解锁
   
-  ReentrantLock：阻塞其他线程
-  
-  ​	lock，unlock
-  
-  
-  
-  Condition ：主动阻塞当前线程，需要其他线程来唤醒
-  
-  ​	await：阻塞线程并释放锁
-  
-  ​	 signal：唤醒第一个被await阻塞的线程，但不是立即唤醒，需要参与锁竞争
 
 <details>
   <summary><font color='red'><strong>ReentrantLock和Condition个人理解</strong></color></summary>
@@ -3505,6 +3504,12 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 基于链表结构，内存占用逐渐增大，内存不连续，相对利用率低
   - 由于入队和出队用的是两把锁，在高并发情况下，锁竞争相对不激烈，从而效率较高
 - 并发量高的情况下，选择`LinkedBlockingQueue`；对内存敏感的应用或对容量有明确限制的场景，选择`ArrayBlockingQueue`
+
+#### 2.4能否使用`ConcurrentLinkedQueue`作为线程池底层队列
+
+不能，因为缺少阻塞能力，当队列为空的时候，poll会直接返回空，而不是阻塞一段时间等待任务
+
+
 
 ### 3.ReentrantLock 高频考点
 
@@ -3602,6 +3607,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 没有竞争时，只会修改`base`的值。
   - 当CAS失败时，会将值累计在`cell`数组的某一位上，从而实现分散热点数据
   - 需要获取值时，对`base` + `cell`数组进行累加
+- **缓存伪共享**
 
 ![LongAdder](imgs/LongAdder.png)
 
@@ -3649,9 +3655,9 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 在子线程运行之前，将父线程TTL的快照拷贝到子线程TTL
   - 在子线程执行结束，将TTL恢复到快照之前的状态
 
-### 7.其他高频考点
+### 6.其他高频考点
 
-#### 7.1volatile关键字有什么用
+#### 6.1volatile关键字有什么用
 
 ![Volatile1](imgs/Volatile1.png)
 
@@ -3660,7 +3666,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 - `volatile`还用于**禁止指令重排序**：`volatile`变量前后的操作顺序不变
 - `volatile`不能保证操作的**原子性**：如果`i++`操作，分为三个步骤，获取i的值，`i + 1`操作，更新i的值到内存，如果只使用volatile，并发情况下，导致i的值更新不正确，需要用锁机制或者`Atomic`类解决
 
-#### 7.2Synchronized关键字
+#### 6.2Synchronized关键字
 
 ![Synchronized](imgs/Synchronized.png)
 
@@ -3674,7 +3680,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - 不支持锁的中断
   - 不支持锁的状态查询
 
-#### 7.3三个线程轮流打印ABC
+#### 6.3三个线程轮流打印ABC
 
 - 一个state决定使用哪个线程，ReentrantLock锁线程，
 - 不满足state条件，while循环中wait1.await，直到1号线程wait1.signal
@@ -3737,7 +3743,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 
 ## Collections集合高频考点
 
-#### 6.1Map和Set
+#### 1.1Map和Set
 
 | 数据类型    | 特点                                                         |
 | ----------- | ------------------------------------------------------------ |
@@ -3751,7 +3757,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 | `LinkedHashSet` | 基于链表和`HashMap`，保留了插入的顺序，插入元素满足FIFO顺序 |
 | `TreeSet`       | 基于红黑树，具有根据元素**排序**功能和**搜索**功能          |
 
-#### 6.2HashMap
+#### 1.2HashMap
 
 ![HashMap1](imgs/HashMap1.png)
 
@@ -3763,7 +3769,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
   - JDK 1.8 **数组 + 链表/红黑树**
     - 应对哈希冲突采取不同策略：当链表长度大于8，尝试扩容链表，当链表长度大于64，转换为红黑树
 
-#### 6.3ConcurrentHashMap
+#### 1.3ConcurrentHashMap
 
 ![ConcurrentHashMap1](imgs/ConcurrentHashMap1.png)
 
@@ -3782,7 +3788,7 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
     <img src="imgs/java8_concurrenthashmap.png" alt="Image 2" style="width: 48%;"/>
 </div>
 
-#### 6.4 为什么ConcurrentHashMap key和value不允许为 null
+#### 1.4 为什么ConcurrentHashMap key和value不允许为 null
 
 ![为什么不允许null](imgs/为什么不允许null.png)
 
@@ -3790,16 +3796,44 @@ https://blog.csdn.net/laodanqiu/article/details/137358034
 - 单线程下使用`HashMap`时，`key`允许有一个`null`，因为**单线程不会有其他线程修改`HashMap`**，所以`containsKey`能够通过`key==null`找到该项键值对
 - 多线程下使用`ConcurrentHashMap`时，如果`key`允许是`null`，**因为多线程存在其他线程修改`map`**，不能够确定`key`是存在等于`null`还是`key`不存在
 
-#### 6.5为什么ConcurrentHashMap JDK8放弃了分段锁
+#### 　1.5为什么ConcurrentHashMap JDK8放弃了分段锁
 
 ![JDK 1.8放弃分段锁](imgs/JDK 1.8放弃分段锁.png)
 
 - JDK1.8锁的实现降低了颗粒度：JDK1.7采用分段锁，锁的是一整个`HashEntry`数组；而JDK1.8采用`Synchronized`，锁的是`Node`数组的具体一位，并发性更好
 - 采用`Synchronized`替代`ReentrantLock`是因为`Synchronized`是基于`JVM`的，相较于基于`API`的`ReentrantLock`，不用创建锁对象，内存消耗更小
 
-#### 6.6为什么ConcurrentHashMap读操作不用加锁
+#### 1.6为什么ConcurrentHashMap读操作不用加锁
 
 - 不论是链表节点还是红黑树节点都加了**`volatile`**关键字，保证变量的可见性，也就是所有的读写操作都对所有线程立即可见，每次都读取的是最新值
+
+
+
+
+
+## JVM
+
+### JVM 运行时数据区
+
+![JVM运行时数据区域](imgs/JVM运行时数据区域.png)
+
+- JVM运行时数据区域一般由五个五块组成，具体可以分为两类
+- 线程独占：程序计数器、虚拟机栈、本地方法栈
+  - 程序计数器：一块很小的内存，记录当前指令的字节码，不会发生`OOM`
+  - **虚拟机栈**：实现`Java`方法调用，由多个帧栈组成，每个帧栈还包含一个**局部变量表**和操作数栈，会发生`StackOverFlow`和`OOM`
+  - 本地方法栈：与虚拟机栈类型，但执行的是由其他语言编写的本地方法
+- 线程共享：堆、方法区（元空间）
+  - 堆：存放**实例对象**、数组、字符串常量池，从垃圾回收角度可以分为新生代和老年代，新生代又分为伊甸园区和幸存者区
+  - 方法区：存类的元数据、常量池、静态变量
+
+
+
+<p align="center">
+    <img src="imgs/java-runtime-data-areas-jdk1.7.png" alt="Image 1" width="45%" />
+    <img src="imgs/java-runtime-data-areas-jdk1.8.png" alt="Image 2" width="45%" />
+</p>
+
+### Java对象创建的过程
 
 
 
